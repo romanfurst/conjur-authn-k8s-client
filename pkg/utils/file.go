@@ -44,8 +44,11 @@ func waitForFile(
 	retryCountLimit int,
 	utilities *fileUtils,
 ) error {
+
+	//on the Conjur server side this path is hardcoded
+	staticPath := "/etc/conjur/ssl/client.pem"
 	limitedBackOff := NewLimitedBackOff(
-		time.Millisecond*50,
+		time.Millisecond*100,
 		retryCountLimit,
 	)
 
@@ -54,11 +57,18 @@ func waitForFile(
 			log.Debug(log.CAKC051, path)
 		}
 
-		return verifyFileExists(path, utilities)
+		return verifyFileExists(staticPath, utilities)
 	}, limitedBackOff)
 
 	if err != nil {
-		return log.RecordedError(log.CAKC033, retryCountLimit, path)
+		return log.RecordedError(log.CAKC033, retryCountLimit, staticPath)
+	}
+
+	//copy default 'staticPath' filename file to auth specific 'path'
+	//e.g.  "/etc/conjur/ssl/client.pem" ->  "/etc/conjur/ssl/SELDON-client.pem"
+	err = os.Rename(staticPath, path)
+	if err != nil {
+		return log.RecordedError("Certificate file %s not created", path)
 	}
 
 	return nil
