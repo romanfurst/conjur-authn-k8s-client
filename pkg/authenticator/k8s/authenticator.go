@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/fullsailor/pkcs7"
@@ -29,6 +31,7 @@ import (
 
 var oidExtensionSubjectAltName = asn1.ObjectIdentifier{2, 5, 29, 17}
 var bufferTime = 30 * time.Second
+var authLock sync.Mutex
 
 // Authenticator contains the configuration and client
 // for the authentication connection to Conjur
@@ -81,9 +84,16 @@ func (auth *Authenticator) Authenticate() error {
 }
 
 func (auth *Authenticator) AuthenticateWithContext(ctx context.Context) error {
+	//Since we have several Authenticators in memory and during login process PEMs file are injected/written into the same file on FS, there is possibility of misconfigurations.
+	//To prevent concurrency between Authenticators during authentication, mutex lock is used
+	authLock.Lock()
+	defer authLock.Unlock()
+
 	log.Info(log.CAKC040, auth.config.Common.Username)
 
 	tr := trace.NewOtelTracer(otel.Tracer("conjur-authn-k8s-client"))
+	authShouldRetry := true
+login:
 	spanCtx, span := tr.Start(ctx, "Authenticate")
 	defer span.End()
 
@@ -98,6 +108,12 @@ func (auth *Authenticator) AuthenticateWithContext(ctx context.Context) error {
 	if err != nil {
 		span.RecordErrorAndSetStatus(err)
 		span.End()
+		///mismatch between Authenticators and its injected PEMs could have happened. For given Authenticator lets try login again:
+		if strings.Contains(err.Error(), "tls: private key does not match public key") && authShouldRetry {
+			auth.PublicCert = nil
+			authShouldRetry = false
+			goto login
+		}
 		return err
 	}
 
