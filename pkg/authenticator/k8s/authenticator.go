@@ -43,6 +43,10 @@ type Authenticator struct {
 	PublicCert  *x509.Certificate
 }
 
+func (auth *Authenticator) GetHttpClient() *http.Client {
+	return auth.client
+}
+
 const (
 	nameTypeEmail = 1
 	nameTypeDNS   = 2

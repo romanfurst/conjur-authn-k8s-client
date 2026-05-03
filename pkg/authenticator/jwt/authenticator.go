@@ -26,6 +26,10 @@ type Authenticator struct {
 	Config      *Config
 }
 
+func (auth *Authenticator) GetHttpClient() *http.Client {
+	return auth.client
+}
+
 // NewWithAccessToken creates a new authenticator instance from a given access token
 func NewWithAccessToken(config Config, accessToken access_token.AccessToken) (*Authenticator, error) {
 	signingKey, err := rsa.GenerateKey(rand.Reader, 4096)
