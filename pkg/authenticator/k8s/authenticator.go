@@ -32,6 +32,7 @@ import (
 var oidExtensionSubjectAltName = asn1.ObjectIdentifier{2, 5, 29, 17}
 var bufferTime = 30 * time.Second
 var authLock sync.Mutex
+var signingKey *rsa.PrivateKey
 
 // Authenticator contains the configuration and client
 // for the authentication connection to Conjur
@@ -56,9 +57,13 @@ const (
 
 // NewWithAccessToken creates a new authenticator instance from a given access token
 func NewWithAccessToken(config Config, accessToken access_token.AccessToken) (*Authenticator, error) {
-	signingKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, log.RecordedError(log.CAKC030, err)
+	//since generate privateKey is CPU intensive, lets generate the private  key only once and share it between authenticato instance
+	var err error
+	if signingKey == nil {
+		signingKey, err = rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			return nil, log.RecordedError(log.CAKC030, err)
+		}
 	}
 
 	client, err := common.NewHTTPSClient(config.Common.SSLCertificate, nil, nil)
