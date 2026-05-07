@@ -196,7 +196,7 @@ func (auth *Authenticator) login(ctx context.Context, tracer trace.Tracer) error
 
 	//TADY start mutext
 	authLock.Lock()
-	defer authLock.Unlock() //falback unclock
+	defer authLock.TryLock() //falback unclock
 	_ = os.Remove("/etc/conjur/ssl/client.pem")
 	req, err := LoginRequest(auth.config.Common.URL, csrBytes, auth.config.Common.Username.Prefix)
 	if err != nil {
@@ -225,7 +225,7 @@ func (auth *Authenticator) login(ctx context.Context, tracer trace.Tracer) error
 		auth.config.Common.ClientCertPath,
 		auth.config.Common.ClientCertRetryCountLimit,
 	)
-	authLock.Unlock() //unclock
+	//authLock.Unlock() //unclock
 	if err != nil {
 		// The response code was changed from 200 to 202 in the same Conjur version
 		// that started writing the cert injection logs to the client. Verifying that
@@ -272,7 +272,7 @@ func (auth *Authenticator) login(ctx context.Context, tracer trace.Tracer) error
 	span.End()
 
 	// clean up the client cert so it's only available in memory
-	os.Remove(auth.config.Common.ClientCertPath)
+	//os.Remove(auth.config.Common.ClientCertPath) //TODO: odkomentovat
 	log.Debug(log.CAKC050)
 
 	return nil

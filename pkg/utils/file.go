@@ -1,6 +1,10 @@
 package utils
 
 import (
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"io/ioutil"
 	"os"
 	"time"
 
@@ -72,6 +76,59 @@ func waitForFile(
 	}
 
 	return nil
+}
+
+func waitCorrectCertificate(
+	path string,
+	retryCountLimit int,
+	utilities *fileUtils,
+	authn string,
+) error {
+	staticPath := "/etc/conjur/ssl/client.pem"
+	limitedBackOff := NewLimitedBackOff(
+		time.Millisecond*100,
+		retryCountLimit,
+	)
+
+	err := backoff.Retry(func() error {
+		if limitedBackOff.RetryCount() > 0 {
+			log.Debug(log.CAKC051, path)
+		}
+
+		err := verifyFileExists(staticPath, utilities)
+		if err != nil {
+			return err
+		}
+
+		certPEMBlock, err := ioutil.ReadFile(staticPath)
+		if err != nil {
+			return err
+		}
+		certDERBlock, certPEMBlock := pem.Decode(certPEMBlock)
+		cert, err := x509.ParseCertificate(certDERBlock.Bytes)
+		if err != nil {
+			return err
+		}
+
+		if cert.Subject.CommonName != "d" {
+			return errors.New("not cert for " + authn)
+		}
+
+		err = os.WriteFile(path, certPEMBlock, 0600)
+		if err != nil {
+			return log.RecordedError("unable to write certificate to file %s: %s", path, err.Error())
+		}
+
+		return nil
+
+	}, limitedBackOff)
+
+	if err != nil {
+		return log.RecordedError(log.CAKC033+" for "+authn, retryCountLimit, staticPath)
+	}
+
+	return nil
+
 }
 
 // VerifyFileExists verifies that a file exists at a given path and is a
