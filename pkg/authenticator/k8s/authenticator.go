@@ -90,6 +90,7 @@ func (auth *Authenticator) Authenticate() error {
 func (auth *Authenticator) AuthenticateWithContext(ctx context.Context) error {
 	//Since we have several Authenticators in memory and during login process PEMs file are injected/written into the same file on FS, there is possibility of misconfigurations.
 	//To prevent concurrency between Authenticators during authentication, mutex lock is used
+	//TODO tohle je uzke hrdlo, kduz bez period sync -> webhook ma smulu
 	authLock.Lock()
 	defer authLock.Unlock()
 
@@ -178,6 +179,13 @@ func (auth *Authenticator) login(ctx context.Context, tracer trace.Tracer) error
 	log.Debug(log.CAKC041, auth.config.Common.Username)
 
 	_, span := tracer.Start(ctx, "Generate CSR")
+	/*
+		slo by mit jeden file se vsem certy ?
+		file by mel TTL odpocitavany podle prvniho vlozenho -> po vyprseni TTL file by se smazal a dalsi volani by pridavali certy znovu
+		refresh certu na pozadi ?
+		jde natahnout valifiyu generovaneho certu ?
+
+	*/
 	csrRawBytes, err := auth.generateCSR(auth.config.Common.Username.Suffix)
 
 	csrBytes := pem.EncodeToMemory(&pem.Block{
