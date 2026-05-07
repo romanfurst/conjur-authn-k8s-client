@@ -261,6 +261,8 @@ func (auth *Authenticator) login(ctx context.Context, tracer trace.Tracer) error
 		return log.RecordedError(log.CAKC012, err)
 	}
 	log.Debug(log.CAKC049, auth.config.Common.ClientCertPath)
+	log.Info("--------------------")
+	log.Info(string(certPEMBlock))
 
 	certDERBlock, certPEMBlock := pem.Decode(certPEMBlock)
 	cert, err := x509.ParseCertificate(certDERBlock.Bytes)
