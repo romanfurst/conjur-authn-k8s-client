@@ -88,10 +88,6 @@ func (auth *Authenticator) Authenticate() error {
 }
 
 func (auth *Authenticator) AuthenticateWithContext(ctx context.Context) error {
-	//Since we have several Authenticators in memory and during login process PEMs file are injected/written into the same file on FS, there is possibility of misconfigurations.
-	//To prevent concurrency between Authenticators during authentication, mutex lock is used
-	authLock.Lock()
-	defer authLock.Unlock()
 
 	log.Info(log.CAKC040, auth.config.Common.Username)
 
@@ -185,7 +181,6 @@ func (auth *Authenticator) login(ctx context.Context, tracer trace.Tracer) error
 	})
 	span.End()
 
-	_ = os.Remove("/etc/conjur/ssl/client.pem")
 	req, err := LoginRequest(auth.config.Common.URL, csrBytes, auth.config.Common.Username.Prefix)
 	if err != nil {
 		return err
@@ -209,9 +204,10 @@ func (auth *Authenticator) login(ctx context.Context, tracer trace.Tracer) error
 	_, span = tracer.Start(ctx, "Wait for cert file")
 	// Ensure client certificate exists before attempting to read it, with a tolerance
 	// for small delays
-	err = utils.WaitForFile(
+	err = utils.WaitCorrectCertificate(
 		auth.config.Common.ClientCertPath,
 		auth.config.Common.ClientCertRetryCountLimit,
+		auth.config.Common.Username.Suffix,
 	)
 	if err != nil {
 		// The response code was changed from 200 to 202 in the same Conjur version
@@ -259,7 +255,7 @@ func (auth *Authenticator) login(ctx context.Context, tracer trace.Tracer) error
 	span.End()
 
 	// clean up the client cert so it's only available in memory
-	os.Remove(auth.config.Common.ClientCertPath)
+	_ = os.Remove(auth.config.Common.ClientCertPath)
 	log.Debug(log.CAKC050)
 
 	return nil
