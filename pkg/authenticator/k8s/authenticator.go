@@ -221,10 +221,14 @@ func (auth *Authenticator) login(ctx context.Context, tracer trace.Tracer) error
 	_, span = tracer.Start(ctx, "Wait for cert file")
 	// Ensure client certificate exists before attempting to read it, with a tolerance
 	// for small delays
-	err = utils.WaitForFile(
+	/*err = utils.WaitForFile(
 		auth.config.Common.ClientCertPath,
 		auth.config.Common.ClientCertRetryCountLimit,
-	)
+	)*/
+	err = utils.WaitCorrectCertificate(
+		auth.config.Common.ClientCertPath,
+		auth.config.Common.ClientCertRetryCountLimit,
+		auth.config.Common.Username.Suffix)
 	//authLock.Unlock() //unclock
 	if err != nil {
 		// The response code was changed from 200 to 202 in the same Conjur version

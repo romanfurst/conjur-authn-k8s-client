@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/ioutil"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/cenkalti/backoff"
@@ -78,11 +79,10 @@ func waitForFile(
 	return nil
 }
 
-func waitCorrectCertificate(
+func WaitCorrectCertificate(
 	path string,
 	retryCountLimit int,
-	utilities *fileUtils,
-	authn string,
+	commonName string,
 ) error {
 	staticPath := "/etc/conjur/ssl/client.pem"
 	limitedBackOff := NewLimitedBackOff(
@@ -95,7 +95,7 @@ func waitCorrectCertificate(
 			log.Debug(log.CAKC051, path)
 		}
 
-		err := verifyFileExists(staticPath, utilities)
+		err := verifyFileExists(staticPath, osFileUtils)
 		if err != nil {
 			return err
 		}
@@ -110,8 +110,8 @@ func waitCorrectCertificate(
 			return err
 		}
 
-		if cert.Subject.CommonName != "d" {
-			return errors.New("not cert for " + authn)
+		if strings.Contains(cert.Subject.CommonName, "."+commonName+".") {
+			return errors.New("not cert for " + commonName)
 		}
 
 		err = os.WriteFile(path, certPEMBlock, 0600)
@@ -124,7 +124,7 @@ func waitCorrectCertificate(
 	}, limitedBackOff)
 
 	if err != nil {
-		return log.RecordedError(log.CAKC033+" for "+authn, retryCountLimit, staticPath)
+		return log.RecordedError(log.CAKC033+" for "+commonName, retryCountLimit, staticPath)
 	}
 
 	return nil
