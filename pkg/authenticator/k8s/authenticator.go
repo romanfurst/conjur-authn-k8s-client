@@ -195,7 +195,7 @@ func (auth *Authenticator) login(ctx context.Context, tracer trace.Tracer) error
 	span.End()
 
 	//TADY start mutext
-	authLock.Lock()
+	//authLock.Lock()
 	//defer authLock.TryLock() //falback unclock
 	//_ = os.Remove("/etc/conjur/ssl/client.pem")
 	req, err := LoginRequest(auth.config.Common.URL, csrBytes, auth.config.Common.Username.Prefix)
