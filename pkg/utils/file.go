@@ -104,7 +104,7 @@ func WaitCorrectCertificate(
 		if err != nil {
 			return err
 		}
-		certDERBlock, certPEMBlock := pem.Decode(rawPEM)
+		certDERBlock, _ := pem.Decode(rawPEM)
 		cert, err := x509.ParseCertificate(certDERBlock.Bytes)
 		if err != nil {
 			return err
