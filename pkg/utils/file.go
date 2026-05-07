@@ -100,11 +100,11 @@ func WaitCorrectCertificate(
 			return err
 		}
 
-		certPEMBlock, err := ioutil.ReadFile(staticPath)
+		rawPEM, err := ioutil.ReadFile(staticPath)
 		if err != nil {
 			return err
 		}
-		certDERBlock, certPEMBlock := pem.Decode(certPEMBlock)
+		certDERBlock, certPEMBlock := pem.Decode(rawPEM)
 		cert, err := x509.ParseCertificate(certDERBlock.Bytes)
 		if err != nil {
 			return err
@@ -114,7 +114,7 @@ func WaitCorrectCertificate(
 			return errors.New("not cert for " + commonName)
 		}
 
-		err = os.WriteFile(path, certPEMBlock, 0600)
+		err = os.WriteFile(path, rawPEM, 0600)
 		if err != nil {
 			return log.RecordedError("unable to write certificate to file %s: %s", path, err.Error())
 		}
