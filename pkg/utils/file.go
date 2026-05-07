@@ -110,7 +110,7 @@ func WaitCorrectCertificate(
 			return err
 		}
 
-		if !strings.Contains(cert.Subject.CommonName, "."+commonName+".") {
+		if !strings.Contains(cert.Subject.CommonName, commonName) {
 			return errors.New("not cert for " + commonName)
 		}
 
