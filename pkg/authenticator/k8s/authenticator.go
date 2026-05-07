@@ -91,8 +91,8 @@ func (auth *Authenticator) AuthenticateWithContext(ctx context.Context) error {
 	//Since we have several Authenticators in memory and during login process PEMs file are injected/written into the same file on FS, there is possibility of misconfigurations.
 	//To prevent concurrency between Authenticators during authentication, mutex lock is used
 	//TODO tohle je uzke hrdlo, kduz bez period sync -> webhook ma smulu
-	authLock.Lock()
-	defer authLock.Unlock()
+	//authLock.Lock()
+	//defer authLock.Unlock()
 
 	log.Info(log.CAKC040, auth.config.Common.Username)
 
@@ -180,10 +180,11 @@ func (auth *Authenticator) login(ctx context.Context, tracer trace.Tracer) error
 
 	_, span := tracer.Start(ctx, "Generate CSR")
 	/*
-		slo by mit jeden file se vsem certy ?
-		file by mel TTL odpocitavany podle prvniho vlozenho -> po vyprseni TTL file by se smazal a dalsi volani by pridavali certy znovu
-		refresh certu na pozadi ?
-		jde natahnout valifiyu generovaneho certu ?
+			slo by mit jeden file se vsem certy ?
+			file by mel TTL odpocitavany podle prvniho vlozenho -> po vyprseni TTL file by se smazal a dalsi volani by pridavali certy znovu
+			refresh certu na pozadi ?
+			jde natahnout valifiyu generovaneho certu ?
+		nebo mozna nepotrujeme? jen overit ze cteme client-<authn>.pem file
 
 	*/
 	csrRawBytes, err := auth.generateCSR(auth.config.Common.Username.Suffix)
@@ -193,6 +194,9 @@ func (auth *Authenticator) login(ctx context.Context, tracer trace.Tracer) error
 	})
 	span.End()
 
+	//TADY start mutext
+	authLock.Lock()
+	defer authLock.Unlock() //falback unclock
 	_ = os.Remove("/etc/conjur/ssl/client.pem")
 	req, err := LoginRequest(auth.config.Common.URL, csrBytes, auth.config.Common.Username.Prefix)
 	if err != nil {
@@ -221,6 +225,7 @@ func (auth *Authenticator) login(ctx context.Context, tracer trace.Tracer) error
 		auth.config.Common.ClientCertPath,
 		auth.config.Common.ClientCertRetryCountLimit,
 	)
+	authLock.Unlock() //unclock
 	if err != nil {
 		// The response code was changed from 200 to 202 in the same Conjur version
 		// that started writing the cert injection logs to the client. Verifying that
