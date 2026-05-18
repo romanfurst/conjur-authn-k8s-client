@@ -283,7 +283,7 @@ func (auth *Authenticator) login(ctx context.Context, tracer trace.Tracer) error
 	span.End()
 
 	// clean up the client cert so it's only available in memory
-	//os.Remove(auth.config.Common.ClientCertPath) //TODO: odkomentovat
+	_ = os.Remove(auth.config.Common.ClientCertPath)
 	log.Debug(log.CAKC050)
 
 	return nil
