@@ -151,7 +151,7 @@ func waitForFile(
 func WaitCorrectCertificate(
 	path string,
 	retryCountLimit int,
-	commonName string,
+	usernameSuffix string,
 ) error {
 	staticPath := "/etc/conjur/ssl/client.pem"
 	limitedBackOff := NewLimitedBackOff(
@@ -179,12 +179,12 @@ func WaitCorrectCertificate(
 			return log.RecordedError(log.CAKC013, staticPath, err)
 		}
 
-		if !strings.Contains(cert.Subject.CommonName, commonName) {
+		if cert.Subject.CommonName != usernameSuffix && !strings.HasSuffix(cert.Subject.CommonName, "."+usernameSuffix) {
 			// Cache the currently loaded certificate under its own CN for a short time.
 			putCertInCache(cert.Subject.CommonName, rawPEM)
 
 			// Before failing, see if requested CN is already cached.
-			if cachedPEM, ok := getCertFromCache(commonName); ok {
+			if cachedPEM, ok := getCertFromCache(usernameSuffix); ok {
 				err = os.WriteFile(path, cachedPEM, 0600)
 				if err != nil {
 					return log.RecordedError("unable to write cached certificate to file %s: %s", path, err.Error())
@@ -194,7 +194,7 @@ func WaitCorrectCertificate(
 				return nil
 			}
 
-			return errors.New("not cert for " + commonName)
+			return errors.New("not cert for " + usernameSuffix)
 		}
 
 		err = os.WriteFile(path, rawPEM, 0600) //write cert content into authn specific PEM file <authnName>-client.pem
@@ -207,7 +207,7 @@ func WaitCorrectCertificate(
 	}, limitedBackOff)
 
 	if err != nil {
-		return log.RecordedError(log.CAKC033+" for "+commonName, retryCountLimit, staticPath)
+		return log.RecordedError(log.CAKC033+" for "+usernameSuffix, retryCountLimit, staticPath)
 	}
 
 	return nil
