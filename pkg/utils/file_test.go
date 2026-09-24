@@ -1,8 +1,16 @@
 package utils
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -171,9 +179,10 @@ func TestFile(t *testing.T) {
 // same policy branch and their ids differ only by a leading "M", so a
 // substring match on the username suffix pairs one host with the other's cert.
 const (
-	scSupportSuffix = "SCSUPPORT.conjur-secret-provider.k8s-provider"
-	scSupportCN     = "host.conjur.authn-k8s.nprod.AP_CLD_09831_SQ015.SCSUPPORT.conjur-secret-provider.k8s-provider"
-	mscSupportCN    = "host.conjur.authn-k8s.nprod.AP_CLD_09831_SQ015.MSCSUPPORT.conjur-secret-provider.k8s-provider"
+	scSupportSuffix  = "SCSUPPORT.conjur-secret-provider.k8s-provider"
+	scSupportCN      = "host.conjur.authn-k8s.nprod.AP_CLD_09831_SQ015.SCSUPPORT.conjur-secret-provider.k8s-provider"
+	mscSupportCN     = "host.conjur.authn-k8s.nprod.AP_CLD_09831_SQ015.MSCSUPPORT.conjur-secret-provider.k8s-provider"
+	mscSupportSuffix = "MSCSUPPORT.conjur-secret-provider.k8s-provider"
 )
 
 func TestMatchesUsernameSuffix(t *testing.T) {
@@ -275,6 +284,139 @@ func TestTakeCertFromCache(t *testing.T) {
 
 		_, ok := takeCertFromCache(scSupportSuffix)
 
+		assert.False(t, ok)
+	})
+}
+
+// testCertPEM builds a self-signed cert with the given CN and expiry, PEM encoded
+// the same way Conjur injects it into the drop path.
+func testCertPEM(t *testing.T, commonName string, notAfter time.Time) []byte {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	assert.NoError(t, err)
+
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: commonName},
+		NotBefore:    time.Now().Add(-1 * time.Hour),
+		NotAfter:     notAfter,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	assert.NoError(t, err)
+
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// withDropPath redirects the injection path at a temp file for the duration of a
+// test and clears the cert cache, so cases don't leak into each other.
+func withDropPath(t *testing.T) (dropPath string, clientCertPath string) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	dropPath = filepath.Join(tmpDir, "client.pem")
+	clientCertPath = filepath.Join(tmpDir, "SCSUPPORT-client.pem")
+
+	original := certDropPath
+	certDropPath = dropPath
+	t.Cleanup(func() { certDropPath = original })
+
+	certCacheMu.Lock()
+	certCache = map[string]cachedCert{}
+	certCacheMu.Unlock()
+
+	return dropPath, clientCertPath
+}
+
+func TestWaitCorrectCertificate(t *testing.T) {
+	validFor := time.Now().Add(1 * time.Hour)
+
+	t.Run("Writes the cert of the requested host", func(t *testing.T) {
+		dropPath, clientCertPath := withDropPath(t)
+		rawPEM := testCertPEM(t, scSupportCN, validFor)
+		assert.NoError(t, os.WriteFile(dropPath, rawPEM, 0600))
+
+		err := WaitCorrectCertificate(clientCertPath, 2, scSupportSuffix)
+
+		assert.NoError(t, err)
+		written, readErr := os.ReadFile(clientCertPath)
+		assert.NoError(t, readErr)
+		assert.Equal(t, rawPEM, written)
+	})
+
+	t.Run("Caches the cert of another host instead of using it", func(t *testing.T) {
+		dropPath, clientCertPath := withDropPath(t)
+		rawPEM := testCertPEM(t, mscSupportCN, validFor)
+		assert.NoError(t, os.WriteFile(dropPath, rawPEM, 0600))
+
+		err := WaitCorrectCertificate(clientCertPath, 2, scSupportSuffix)
+
+		assert.Error(t, err)
+		assert.NoFileExists(t, clientCertPath)
+
+		// The rightful owner can still collect it from the cache.
+		cachedPEM, ok := takeCertFromCache(mscSupportSuffix)
+		assert.True(t, ok)
+		assert.Equal(t, rawPEM, cachedPEM)
+	})
+
+	t.Run("Finds its cert in the cache when the drop path is empty", func(t *testing.T) {
+		_, clientCertPath := withDropPath(t)
+		rawPEM := testCertPEM(t, scSupportCN, validFor)
+		// A peer read our cert and parked it; the drop path is gone by now.
+		putCertInCache(scSupportCN, rawPEM)
+
+		err := WaitCorrectCertificate(clientCertPath, 2, scSupportSuffix)
+
+		assert.NoError(t, err)
+		written, readErr := os.ReadFile(clientCertPath)
+		assert.NoError(t, readErr)
+		assert.Equal(t, rawPEM, written)
+	})
+
+	t.Run("Retries instead of panicking on a half-written cert", func(t *testing.T) {
+		dropPath, clientCertPath := withDropPath(t)
+		rawPEM := testCertPEM(t, scSupportCN, validFor)
+		assert.NoError(t, os.WriteFile(dropPath, rawPEM[:40], 0600))
+
+		assert.NotPanics(t, func() {
+			err := WaitCorrectCertificate(clientCertPath, 2, scSupportSuffix)
+			assert.Error(t, err)
+		})
+		assert.NoFileExists(t, clientCertPath)
+	})
+
+	t.Run("Retries instead of panicking on an empty cert file", func(t *testing.T) {
+		dropPath, clientCertPath := withDropPath(t)
+		assert.NoError(t, os.WriteFile(dropPath, []byte{}, 0600))
+
+		assert.NotPanics(t, func() {
+			err := WaitCorrectCertificate(clientCertPath, 2, scSupportSuffix)
+			assert.Error(t, err)
+		})
+		assert.NoFileExists(t, clientCertPath)
+	})
+
+	t.Run("Rejects an expired cert left over from an earlier login", func(t *testing.T) {
+		dropPath, clientCertPath := withDropPath(t)
+		rawPEM := testCertPEM(t, scSupportCN, time.Now().Add(-1*time.Minute))
+		assert.NoError(t, os.WriteFile(dropPath, rawPEM, 0600))
+
+		err := WaitCorrectCertificate(clientCertPath, 2, scSupportSuffix)
+
+		assert.Error(t, err)
+		assert.NoFileExists(t, clientCertPath)
+	})
+
+	t.Run("Does not cache an expired cert for another host", func(t *testing.T) {
+		dropPath, clientCertPath := withDropPath(t)
+		rawPEM := testCertPEM(t, mscSupportCN, time.Now().Add(-1*time.Minute))
+		assert.NoError(t, os.WriteFile(dropPath, rawPEM, 0600))
+
+		err := WaitCorrectCertificate(clientCertPath, 2, scSupportSuffix)
+
+		assert.Error(t, err)
+		_, ok := takeCertFromCache(mscSupportSuffix)
 		assert.False(t, ok)
 	})
 }

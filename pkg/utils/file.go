@@ -40,6 +40,10 @@ type cachedCert struct {
 	expiresAt time.Time
 }
 
+// certDropPath is the path Conjur injects the client certificate into. It is
+// hardcoded on the server side; it is a var only so tests can redirect it.
+var certDropPath = "/etc/conjur/ssl/client.pem"
+
 var (
 	certCacheTTL = 30 * time.Second
 	certCacheMu  sync.Mutex
@@ -164,7 +168,7 @@ func WaitCorrectCertificate(
 	retryCountLimit int,
 	usernameSuffix string,
 ) error {
-	staticPath := "/etc/conjur/ssl/client.pem"
+	staticPath := certDropPath
 	limitedBackOff := NewLimitedBackOff(
 		time.Millisecond*100,
 		retryCountLimit,
@@ -173,6 +177,16 @@ func WaitCorrectCertificate(
 	err := backoff.Retry(func() error {
 		if limitedBackOff.RetryCount() > 0 {
 			log.Debug(log.CAKC051, path)
+		}
+
+		// A concurrent authenticator may already have parked our cert in the
+		// cache. Check that before the drop path, which by now may be empty or
+		// already overwritten by the next login.
+		if cachedPEM, ok := takeCertFromCache(usernameSuffix); ok {
+			if err := os.WriteFile(path, cachedPEM, 0600); err != nil {
+				return log.RecordedError("unable to write cached certificate to file %s: %s", path, err.Error())
+			}
+			return nil
 		}
 
 		err := verifyFileExists(staticPath, osFileUtils)
@@ -184,24 +198,29 @@ func WaitCorrectCertificate(
 		if err != nil {
 			return err
 		}
+
+		// The cert is injected with an in-place write, so it can be read back
+		// empty or half-written. Retry instead of dereferencing a nil block.
 		certDERBlock, _ := pem.Decode(rawPEM)
+		if certDERBlock == nil {
+			return errors.New("incomplete PEM at " + staticPath)
+		}
+
 		cert, err := x509.ParseCertificate(certDERBlock.Bytes)
 		if err != nil {
 			return log.RecordedError(log.CAKC013, staticPath, err)
 		}
 
-		if !matchesUsernameSuffix(cert.Subject.CommonName, usernameSuffix) {
-			// Cache the currently loaded certificate under its own CN for a short time.
-			putCertInCache(cert.Subject.CommonName, rawPEM)
+		// Nothing clears the drop path, so a cert from an earlier login can
+		// still be sitting there. Never accept one that has already expired,
+		// and never cache it for another authenticator either.
+		if time.Now().After(cert.NotAfter) {
+			return errors.New("expired cert at " + staticPath)
+		}
 
-			// Before failing, see if requested CN is already cached.
-			if cachedPEM, ok := takeCertFromCache(usernameSuffix); ok {
-				err = os.WriteFile(path, cachedPEM, 0600)
-				if err != nil {
-					return log.RecordedError("unable to write cached certificate to file %s: %s", path, err.Error())
-				}
-				return nil
-			}
+		if !matchesUsernameSuffix(cert.Subject.CommonName, usernameSuffix) {
+			// Park it for the authenticator it does belong to.
+			putCertInCache(cert.Subject.CommonName, rawPEM)
 
 			return errors.New("not cert for " + usernameSuffix)
 		}
