@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -163,5 +164,117 @@ func TestFile(t *testing.T) {
 
 			assert.EqualError(t, err, "invalid argument")
 		})
+	})
+}
+
+// Host ids from the PSDOP-29272 production failure. Both hosts live under the
+// same policy branch and their ids differ only by a leading "M", so a
+// substring match on the username suffix pairs one host with the other's cert.
+const (
+	scSupportSuffix = "SCSUPPORT.conjur-secret-provider.k8s-provider"
+	scSupportCN     = "host.conjur.authn-k8s.nprod.AP_CLD_09831_SQ015.SCSUPPORT.conjur-secret-provider.k8s-provider"
+	mscSupportCN    = "host.conjur.authn-k8s.nprod.AP_CLD_09831_SQ015.MSCSUPPORT.conjur-secret-provider.k8s-provider"
+)
+
+func TestMatchesUsernameSuffix(t *testing.T) {
+	testCases := []struct {
+		description    string
+		commonName     string
+		usernameSuffix string
+		expected       bool
+	}{
+		{
+			description:    "CN of the requested host matches",
+			commonName:     scSupportCN,
+			usernameSuffix: scSupportSuffix,
+			expected:       true,
+		},
+		{
+			description:    "CN equal to the suffix matches",
+			commonName:     scSupportSuffix,
+			usernameSuffix: scSupportSuffix,
+			expected:       true,
+		},
+		{
+			description:    "CN of a host whose id differs by a leading letter does not match",
+			commonName:     mscSupportCN,
+			usernameSuffix: scSupportSuffix,
+			expected:       false,
+		},
+		{
+			description:    "CN of a host in another policy branch does not match",
+			commonName:     "host.conjur.authn-k8s.prod.AP_CLD_09831_SQ015.OTHER.conjur-secret-provider.k8s-provider",
+			usernameSuffix: scSupportSuffix,
+			expected:       false,
+		},
+		{
+			description:    "CN that only starts with the suffix does not match",
+			commonName:     scSupportSuffix + ".extra",
+			usernameSuffix: scSupportSuffix,
+			expected:       false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.description, func(t *testing.T) {
+			assert.Equal(
+				t,
+				tc.expected,
+				matchesUsernameSuffix(tc.commonName, tc.usernameSuffix),
+			)
+		})
+	}
+}
+
+func TestTakeCertFromCache(t *testing.T) {
+	resetCertCache := func() {
+		certCacheMu.Lock()
+		defer certCacheMu.Unlock()
+		certCache = map[string]cachedCert{}
+	}
+
+	t.Run("Does not return the cert of a host whose id differs by a leading letter", func(t *testing.T) {
+		resetCertCache()
+		putCertInCache(mscSupportCN, []byte("mscsupport-pem"))
+
+		_, ok := takeCertFromCache(scSupportSuffix)
+
+		assert.False(t, ok)
+	})
+
+	t.Run("Returns the cert of the requested host", func(t *testing.T) {
+		resetCertCache()
+		putCertInCache(mscSupportCN, []byte("mscsupport-pem"))
+		putCertInCache(scSupportCN, []byte("scsupport-pem"))
+
+		cachedPEM, ok := takeCertFromCache(scSupportSuffix)
+
+		assert.True(t, ok)
+		assert.Equal(t, []byte("scsupport-pem"), cachedPEM)
+	})
+
+	t.Run("Removes the returned cert so it is not handed out twice", func(t *testing.T) {
+		resetCertCache()
+		putCertInCache(scSupportCN, []byte("scsupport-pem"))
+
+		_, ok := takeCertFromCache(scSupportSuffix)
+		assert.True(t, ok)
+
+		_, ok = takeCertFromCache(scSupportSuffix)
+		assert.False(t, ok)
+	})
+
+	t.Run("Does not return an expired cert", func(t *testing.T) {
+		resetCertCache()
+		certCacheMu.Lock()
+		certCache[scSupportCN] = cachedCert{
+			rawPEM:    []byte("scsupport-pem"),
+			expiresAt: time.Now().Add(-1 * time.Second),
+		}
+		certCacheMu.Unlock()
+
+		_, ok := takeCertFromCache(scSupportSuffix)
+
+		assert.False(t, ok)
 	})
 }

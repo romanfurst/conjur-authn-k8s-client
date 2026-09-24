@@ -83,7 +83,18 @@ func putCertInCache(commonName string, rawPEM []byte) {
 	}
 }
 
-func getCertFromCache(commonName string) ([]byte, bool) {
+// matchesUsernameSuffix reports whether a certificate CN belongs to the host
+// identified by usernameSuffix. The match is anchored on a dot boundary so that
+// a CN ending in ".MSCSUPPORT.app.host" is not accepted for the username suffix
+// "SCSUPPORT.app.host".
+func matchesUsernameSuffix(commonName string, usernameSuffix string) bool {
+	return commonName == usernameSuffix ||
+		strings.HasSuffix(commonName, "."+usernameSuffix)
+}
+
+// takeCertFromCache returns a cached cert whose CN belongs to usernameSuffix and
+// removes it from the cache, so the same cert is never handed out twice.
+func takeCertFromCache(usernameSuffix string) ([]byte, bool) {
 	certCacheMu.Lock()
 	defer certCacheMu.Unlock()
 
@@ -92,12 +103,12 @@ func getCertFromCache(commonName string) ([]byte, bool) {
 		if time.Now().After(entry.expiresAt) {
 			continue
 		}
-		// Search for a cached cert whose CN contains the requested commonName.
-		if strings.Contains(cachedCN, commonName) {
-			buf := make([]byte, len(entry.rawPEM))
-			copy(buf, entry.rawPEM)
-			return buf, true
+		if !matchesUsernameSuffix(cachedCN, usernameSuffix) {
+			continue
 		}
+
+		delete(certCache, cachedCN)
+		return entry.rawPEM, true
 	}
 
 	return nil, false
@@ -179,18 +190,16 @@ func WaitCorrectCertificate(
 			return log.RecordedError(log.CAKC013, staticPath, err)
 		}
 
-		if cert.Subject.CommonName != usernameSuffix && !strings.HasSuffix(cert.Subject.CommonName, "."+usernameSuffix) {
+		if !matchesUsernameSuffix(cert.Subject.CommonName, usernameSuffix) {
 			// Cache the currently loaded certificate under its own CN for a short time.
 			putCertInCache(cert.Subject.CommonName, rawPEM)
 
 			// Before failing, see if requested CN is already cached.
-			if cachedPEM, ok := getCertFromCache(usernameSuffix); ok {
+			if cachedPEM, ok := takeCertFromCache(usernameSuffix); ok {
 				err = os.WriteFile(path, cachedPEM, 0600)
 				if err != nil {
 					return log.RecordedError("unable to write cached certificate to file %s: %s", path, err.Error())
 				}
-				//found it! Delete current from cache
-				delete(certCache, cert.Subject.CommonName)
 				return nil
 			}
 
